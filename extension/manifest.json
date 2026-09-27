@@ -1,0 +1,17 @@
+{
+   "author": "Triet Ho",
+   "content_scripts": [ {
+      "all_frames": true,
+      "js": [ "jquery.min.js", "luxon.min.js", "app.js" ],
+      "matches": [ "*://*.strava.com/*" ]
+   } ],
+   "description": "Summarize and export csv of Strava activities on Club Recent Activity tab and Profile page",
+   "icons": {
+      "128": "icon.png"
+   },
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApK4t5RygLLtZlnz/QdfJwQ6Tyoqh8ZOYBjDCoUlV4jv8956QwCXjPhXMlgSQ+43LjIUong6v0HV0ZMJfLw27CnHOVXABnps52T/qfEvqtow0zVDX78793WHWNHULd7Yb6lX1PRGzAg8tkOFffYKpsAwz55J96WwGvs1cJ39Bes7oDQn2NUUIdIMmSrvOp6RNKe2+FTSvo/9KmSKiXcUx6zg+wp9vzt94KUVMxu7t5mnWnMQtTGtLyCpfBSQ35VeLPjZX/gTjoe8sIy693uQ7DSQQ8Kh69CVa/qwp0Rt5w/IJ3lK50g/AvYC6L0iEVIVLY1PWfj6nuJQxz/fNoqGNxQIDAQAB",
+   "manifest_version": 3,
+   "name": "Strava Clubs Reports",
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "4.7.2"
+}
