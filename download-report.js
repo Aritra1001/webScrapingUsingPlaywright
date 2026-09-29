@@ -14,6 +14,22 @@ const DASHBOARD_URL = 'https://www.strava.com/dashboard';
 const CLUB_URL = 'https://www.strava.com/clubs/GainInsights';
 const CLUB_MEMBERS_URL = 'https://www.strava.com/clubs/976969/members';
 
+// How the login is done. 'auto' fills the username (and password, if the site asks for one)
+// from Windows Credential Manager and hands over to you only for the captcha / emailed code.
+// 'assisted' leaves the whole login to you. `node download-report.js --manual-login` forces it.
+const LOGIN = {
+    mode: process.argv.includes('--manual-login') ? 'assisted' : 'auto',
+    credential: 'ReportDownloader:strava', // Generic credential name in Credential Manager
+    // Strava renders a desktop and a mobile copy of the form (#desktop-email / #mobile-email)
+    // depending on the window width, so match whichever one is visible.
+    // "Remember me" is ticked by default, so it is left alone.
+    usernameField: 'input[name=email]:visible',
+    submit: 'button[id$=-login-button]:visible',
+    passwordField: 'input[type=password]',
+    codeText: /sent you a code|verification code|enter (the|your) code/i,
+    rejectedText: /unexpected error occurred/i,
+};
+
 const DEVTOOLS_PORT = 9222;
 const DEVTOOLS = `http://127.0.0.1:${DEVTOOLS_PORT}`;
 const CHROME_PATHS = [
@@ -71,8 +87,7 @@ function launchChrome(url) {
 // the page meanwhile. Strava only keeps a logged-in user on /dashboard — but a tab still
 // loading /dashboard reports that URL briefly before bouncing to /login, so it must be seen
 // on two polls in a row. No timeout.
-async function waitForManualLogin() {
-    let prompted = false;
+async function waitForManualLogin(prompted = false) {
     let onDashboard = 0;
     for (let tick = 1; ; tick++) {
         await sleep(2000);
@@ -87,6 +102,116 @@ async function waitForManualLogin() {
             prompted = true;
         }
         if (tick % 15 === 0) log('  ...waiting for you to finish logging in');
+    }
+}
+
+// Reads a Generic credential (Control Panel -> Credential Manager -> Windows Credentials) by
+// its name. The password never reaches the log or any file.
+function readCredential(name) {
+    try {
+        const { findCredentials } = require('@napi-rs/keyring');
+        const [cred] = findCredentials(name, name);
+        return cred ? { username: cred.account, password: cred.password || '' } : null;
+    } catch (e) {
+        log(`Could not read Windows Credential Manager: ${e.message}`);
+        return null;
+    }
+}
+
+// Attaches to the Chrome that launchChrome() just started, fills in what it can from the
+// stored credential, then detaches again so nothing is attached while you solve the captcha
+// or type the emailed code. Returns true when it has already told you what to do next.
+async function autoLogin() {
+    const cred = readCredential(LOGIN.credential);
+    if (!cred || !cred.username) {
+        log(`No credential "${LOGIN.credential}" in Windows Credential Manager — log in by hand.`);
+        log('  (Add it as a Generic Credential to let the script fill the login in next time.)');
+        return false;
+    }
+
+    let browser = null;
+    for (let i = 0; i < 30 && !browser; i++) {
+        browser = await chromium.connectOverCDP(DEVTOOLS).catch(() => null);
+        if (!browser) await sleep(1000); // Chrome is still starting up
+    }
+    if (!browser) {
+        log('Could not attach to Chrome for the automatic login — log in by hand.');
+        return false;
+    }
+
+    try {
+        const context = browser.contexts()[0];
+        let page = null;
+        for (let i = 0; i < 30 && !page; i++) {
+            page = context.pages().find((p) => p.url().startsWith('https://www.strava.com'));
+            if (!page) await sleep(1000);
+        }
+        if (!page) throw new Error('the Strava tab did not open');
+        await page.waitForLoadState('domcontentloaded');
+        await acceptCookieBanner(page);
+
+        // A saved session skips the login entirely. Asking the server is the only reliable
+        // check: an expired session leaves its remember-me cookies behind.
+        const loggedIn = await page.evaluate(() => fetch('/dashboard', { redirect: 'manual' })
+            .then((r) => r.ok && r.type !== 'opaqueredirect')).catch(() => false);
+        if (loggedIn) {
+            log('Already logged in (saved session).');
+            await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            return true;
+        }
+
+        log(`Filling in the login as ${cred.username} (from Credential Manager)...`);
+        await page.locator(LOGIN.usernameField).fill(cred.username, { timeout: 30000 });
+        await page.locator(LOGIN.submit).click();
+
+        // Wait for whatever Strava shows next.
+        let passwordFilled = false;
+        let outcome = 'unknown';
+        for (let i = 0; i < 30 && outcome === 'unknown'; i++) {
+            await sleep(500);
+            if (page.url().startsWith(DASHBOARD_URL)) {
+                outcome = 'dashboard';
+                break;
+            }
+            const text = await page.locator('body').innerText().catch(() => '');
+            if (LOGIN.rejectedText.test(text)) outcome = 'rejected';
+            else if (LOGIN.codeText.test(text)) outcome = 'code';
+            else if (!passwordFilled && await page.locator(LOGIN.passwordField).first().isVisible().catch(() => false)) {
+                if (!cred.password) {
+                    outcome = 'password';
+                } else {
+                    await page.locator(LOGIN.passwordField).first().fill(cred.password);
+                    await page.locator(LOGIN.passwordField).first().press('Enter');
+                    passwordFilled = true;
+                }
+            }
+        }
+
+        if (outcome === 'dashboard') {
+            log('Logged in automatically.');
+            return true;
+        }
+
+        await page.bringToFront().catch(() => {});
+        process.stdout.write('\x07'); // terminal bell
+        if (outcome === 'rejected') {
+            log('>>> Strava rejected the automatic login ("unexpected error"). <<<');
+            log('>>> Please finish the login by hand in the Chrome window. <<<');
+        } else if (outcome === 'code') {
+            log('>>> Strava emailed you a code — type it into the Chrome window and click Next. <<<');
+        } else if (outcome === 'password') {
+            log('>>> Strava wants a password, but the credential has none — type it in the Chrome window. <<<');
+        } else {
+            log('>>> Please finish the login in the Chrome window (captcha / code). <<<');
+        }
+        log('    Waiting until you reach the dashboard - no timeout.');
+        return true;
+    } catch (e) {
+        log(`Automatic login stopped (${e.message.split('\n')[0]}) — please finish logging in by hand.`);
+        return false;
+    } finally {
+        // Detaches only: Chrome and its tabs stay open.
+        await browser.close().catch(() => {});
     }
 }
 
@@ -245,8 +370,9 @@ function toCsv(rows, ctx) {
     log('Step 1: opening the Strava login page in Chrome...');
     const chrome = launchChrome(LOGIN_URL);
 
-    // --- Step 2: wait for the person to finish the whole login by hand -------------------
-    await waitForManualLogin();
+    // --- Step 2: log in — filled from Credential Manager, finished by you where needed ---
+    const prompted = LOGIN.mode === 'auto' ? await autoLogin() : false;
+    await waitForManualLogin(prompted);
 
     // --- Step 3: logged in; only now attach and take over the same window ---------------
     const browser = await chromium.connectOverCDP(DEVTOOLS);
