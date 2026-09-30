@@ -4,3 +4,5 @@ auth.json
 chrome-profile/
 reports/
 run.log
+profiles/
+logs/

@@ -2,9 +2,10 @@
   "name": "downloadreportsusingplaywright",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "download-report.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "strava": "node download-report.js --site strava",
+    "download": "node download-report.js"
   },
   "keywords": [],
   "author": "",
